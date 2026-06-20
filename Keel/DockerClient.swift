@@ -45,6 +45,23 @@ final class DockerClient {
         return try decodeLineDelimitedJSON(output, as: DockerImage.self)
     }
 
+    func stats() async throws -> [DockerContainerStats] {
+        let output = try await run(["stats", "--no-stream", "--format", "{{json .}}"])
+        return try decodeLineDelimitedJSON(output, as: DockerContainerStats.self)
+    }
+
+    func diskUsage() async throws -> [DockerDiskUsage] {
+        let output = try await run(["system", "df", "--format", "{{json .}}"])
+        return try decodeLineDelimitedJSON(output, as: DockerDiskUsage.self)
+    }
+
+    func logs(container: DockerContainer, tail: Int = 120) async throws -> String {
+        try await run(
+            ["logs", "--tail", "\(tail)", "--timestamps", container.id],
+            includeStandardError: true
+        )
+    }
+
     func start(container: DockerContainer) async throws {
         _ = try await run(["start", container.id])
     }
@@ -65,7 +82,7 @@ final class DockerClient {
             }
     }
 
-    private func run(_ arguments: [String]) async throws -> String {
+    private func run(_ arguments: [String], includeStandardError: Bool = false) async throws -> String {
         try await Task.detached(priority: .userInitiated) {
             let process = Process()
             process.executableURL = self.executableURL
@@ -94,7 +111,7 @@ final class DockerClient {
                 )
             }
 
-            return output
+            return includeStandardError ? output + error : output
         }.value
     }
 

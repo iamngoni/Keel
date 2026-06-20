@@ -4,15 +4,30 @@ import Foundation
 enum KeelSection: String, CaseIterable, Identifiable {
     case containers = "Containers"
     case images = "Images"
+    case compose = "Compose"
+    case volumes = "Volumes"
+    case networks = "Networks"
+    case logs = "Logs"
+    case settings = "Settings"
 
     var id: String { rawValue }
 
     var symbol: String {
         switch self {
         case .containers:
-            "shippingbox"
+            return "cube"
         case .images:
-            "square.stack.3d.up"
+            return "square.stack.3d.up"
+        case .compose:
+            return "chevron.left.forwardslash.chevron.right"
+        case .volumes:
+            return "externaldrive"
+        case .networks:
+            return "point.3.connected.trianglepath.dotted"
+        case .logs:
+            return "doc.text"
+        case .settings:
+            return "gearshape"
         }
     }
 }
@@ -20,14 +35,142 @@ enum KeelSection: String, CaseIterable, Identifiable {
 @MainActor
 final class DockerStore: ObservableObject {
     @Published var selectedSection: KeelSection = .containers
+    @Published var searchText = ""
     @Published var containers: [DockerContainer] = []
     @Published var images: [DockerImage] = []
+    @Published var statsByContainerID: [String: DockerContainerStats] = [:]
+    @Published var diskUsage: [DockerDiskUsage] = []
     @Published var daemon: DockerDaemon?
     @Published var errorMessage: String?
+    @Published var logErrorMessage: String?
+    @Published var logOutput = ""
+    @Published var selectedContainerID: String?
+    @Published var lastUpdated: Date?
     @Published var isLoading = false
+    @Published var isLoadingLogs = false
     @Published var actionInFlight: String?
 
     private var client: DockerClient?
+
+    var filteredContainers: [DockerContainer] {
+        let query = normalizedSearch
+        guard !query.isEmpty else { return containers }
+
+        return containers.filter { container in
+            [
+                container.name,
+                container.image,
+                container.status,
+                container.state,
+                container.ports,
+                container.projectName,
+                container.serviceName
+            ]
+            .joined(separator: " ")
+            .localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var filteredImages: [DockerImage] {
+        let query = normalizedSearch
+        guard !query.isEmpty else { return images }
+
+        return images.filter { image in
+            [
+                image.repository,
+                image.tag,
+                image.id,
+                image.createdSince,
+                image.size
+            ]
+            .joined(separator: " ")
+            .localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var containerGroups: [ContainerProjectGroup] {
+        Dictionary(grouping: filteredContainers, by: \.projectName)
+            .map { key, containers in
+                ContainerProjectGroup(
+                    name: key,
+                    containers: containers.sorted { lhs, rhs in
+                        if lhs.isRunning != rhs.isRunning {
+                            return lhs.isRunning && !rhs.isRunning
+                        }
+                        return lhs.serviceName.localizedStandardCompare(rhs.serviceName) == .orderedAscending
+                    }
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.name == "standalone" { return false }
+                if rhs.name == "standalone" { return true }
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    var selectedContainer: DockerContainer? {
+        guard let selectedContainerID else { return containers.first }
+        return containers.first { $0.id == selectedContainerID } ?? containers.first
+    }
+
+    var selectedStats: DockerContainerStats? {
+        guard let selectedContainer else { return nil }
+        return stats(for: selectedContainer)
+    }
+
+    var reclaimableDiskRatio: Double {
+        let total = diskUsage.reduce(0) { $0 + $1.sizeBytes }
+        guard total > 0 else { return 0.18 }
+        let reclaimable = diskUsage.reduce(0) { $0 + $1.reclaimableBytes }
+        return max(0.02, min(reclaimable / total, 1))
+    }
+
+    var lastUpdatedText: String {
+        guard let lastUpdated else { return "Not checked" }
+        let elapsed = max(0, Int(Date().timeIntervalSince(lastUpdated)))
+
+        if elapsed < 5 {
+            return "just now"
+        }
+        if elapsed < 60 {
+            return "\(elapsed)s ago"
+        }
+
+        let minutes = elapsed / 60
+        if minutes < 60 {
+            return "\(minutes)m ago"
+        }
+
+        return "\(minutes / 60)h ago"
+    }
+
+    var recentEvents: [KeelEvent] {
+        var events: [KeelEvent] = []
+
+        for container in containers.prefix(4) {
+            events.append(
+                KeelEvent(
+                    symbol: container.isRunning ? "checkmark.circle" : "pause.circle",
+                    title: "Container \(container.serviceName) \(container.isRunning ? "running" : container.state)",
+                    subtitle: container.projectName,
+                    color: container.statusColor
+                )
+            )
+        }
+
+        if let daemon {
+            events.append(
+                KeelEvent(
+                    symbol: "server.rack",
+                    title: "Engine \(daemon.version)",
+                    subtitle: daemon.context,
+                    color: KeelTheme.accent
+                )
+            )
+        }
+
+        return Array(events.prefix(6))
+    }
 
     func refresh() async {
         isLoading = true
@@ -37,21 +180,51 @@ final class DockerStore: ObservableObject {
             let client = try DockerClient()
             self.client = client
 
-            async let daemon = client.daemon()
-            async let containers = client.containers()
-            async let images = client.images()
+            async let daemonTask = client.daemon()
+            async let containersTask = client.containers()
+            async let imagesTask = client.images()
+            async let statsTask = client.stats()
+            async let diskTask = client.diskUsage()
 
-            self.daemon = try await daemon
-            self.containers = try await containers
-            self.images = try await images
+            daemon = try await daemonTask
+            containers = try await containersTask
+            images = try await imagesTask
+            statsByContainerID = indexStats((try? await statsTask) ?? [])
+            diskUsage = (try? await diskTask) ?? []
+            lastUpdated = Date()
+
+            keepContainerSelectionValid()
+            await loadLogsForSelection()
         } catch {
             daemon = nil
             containers = []
             images = []
+            statsByContainerID = [:]
+            diskUsage = []
+            selectedContainerID = nil
+            logOutput = ""
             errorMessage = error.localizedDescription
         }
 
         isLoading = false
+    }
+
+    func select(_ container: DockerContainer) {
+        selectedContainerID = container.id
+        Task {
+            await loadLogsForSelection()
+        }
+    }
+
+    func stats(for container: DockerContainer) -> DockerContainerStats? {
+        statsByContainerID[container.id]
+            ?? statsByContainerID[container.shortID]
+            ?? statsByContainerID[container.name]
+    }
+
+    func clearLogs() {
+        logOutput = ""
+        logErrorMessage = nil
     }
 
     func start(_ container: DockerContainer) {
@@ -70,6 +243,38 @@ final class DockerStore: ObservableObject {
         runAction("restart-\(container.id)") { client in
             try await client.restart(container: container)
         }
+    }
+
+    private var normalizedSearch: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func keepContainerSelectionValid() {
+        if let selectedContainerID, containers.contains(where: { $0.id == selectedContainerID }) {
+            return
+        }
+
+        selectedContainerID = containers.first(where: \.isRunning)?.id ?? containers.first?.id
+    }
+
+    private func loadLogsForSelection() async {
+        guard let client, let selectedContainer else {
+            logOutput = ""
+            return
+        }
+
+        isLoadingLogs = true
+        logErrorMessage = nil
+
+        do {
+            let output = try await client.logs(container: selectedContainer)
+            logOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            logErrorMessage = error.localizedDescription
+            logOutput = ""
+        }
+
+        isLoadingLogs = false
     }
 
     private func runAction(_ id: String, operation: @escaping (DockerClient) async throws -> Void) {
@@ -91,5 +296,20 @@ final class DockerStore: ObservableObject {
 
             actionInFlight = nil
         }
+    }
+
+    private func indexStats(_ stats: [DockerContainerStats]) -> [String: DockerContainerStats] {
+        var indexed: [String: DockerContainerStats] = [:]
+
+        for stat in stats {
+            if !stat.containerID.isEmpty {
+                indexed[stat.containerID] = stat
+            }
+            if !stat.name.isEmpty {
+                indexed[stat.name] = stat
+            }
+        }
+
+        return indexed
     }
 }

@@ -47,18 +47,23 @@ Keel should work with any local runtime that exposes the standard Docker CLI and
 
 - Detects the active Docker context
 - Shows Docker Engine version
-- Lists containers
+- Command-center interface for local Docker work
+- Groups containers by inferred project/service name
+- Lists containers with image, state, ports, CPU, memory, and quick actions
 - Shows container image, state, and status
 - Starts stopped containers
 - Stops running containers
 - Restarts running containers
+- Shows recent container logs for the selected container
+- Shows Docker disk usage by images, containers, volumes, and build cache
+- Shows selected-container network I/O
 - Lists local Docker images
 - Shows image repository, tag, id, age, and size
 
 ## Roadmap
 
-- Container logs
-- Live resource stats
+- Continuous stats refresh
+- Full streaming logs
 - Exec shell into a container
 - Compose project grouping
 - Volume and network views

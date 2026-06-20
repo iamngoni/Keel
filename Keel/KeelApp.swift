@@ -13,5 +13,6 @@ struct KeelApp: App {
         WindowGroup {
             ContentView()
         }
+        .windowResizability(.contentSize)
     }
 }

@@ -38,17 +38,21 @@ final class DockerStore: ObservableObject {
     @Published var searchText = ""
     @Published var containers: [DockerContainer] = []
     @Published var images: [DockerImage] = []
+    @Published var volumes: [DockerVolume] = []
+    @Published var networks: [DockerNetwork] = []
     @Published var statsByContainerID: [String: DockerContainerStats] = [:]
     @Published var diskUsage: [DockerDiskUsage] = []
     @Published var daemon: DockerDaemon?
     @Published var errorMessage: String?
     @Published var logErrorMessage: String?
     @Published var logOutput = ""
+    @Published var isLogPaused = false
     @Published var selectedContainerID: String?
     @Published var lastUpdated: Date?
     @Published var isLoading = false
     @Published var isLoadingLogs = false
     @Published var actionInFlight: String?
+    @Published var pendingConfirmation: DockerConfirmation?
 
     private var client: DockerClient?
 
@@ -82,6 +86,40 @@ final class DockerStore: ObservableObject {
                 image.id,
                 image.createdSince,
                 image.size
+            ]
+            .joined(separator: " ")
+            .localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var filteredVolumes: [DockerVolume] {
+        let query = normalizedSearch
+        guard !query.isEmpty else { return volumes }
+
+        return volumes.filter { volume in
+            [
+                volume.name,
+                volume.driver,
+                volume.scope,
+                volume.mountpoint,
+                volume.labels
+            ]
+            .joined(separator: " ")
+            .localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var filteredNetworks: [DockerNetwork] {
+        let query = normalizedSearch
+        guard !query.isEmpty else { return networks }
+
+        return networks.filter { network in
+            [
+                network.id,
+                network.name,
+                network.driver,
+                network.scope,
+                network.labels
             ]
             .joined(separator: " ")
             .localizedCaseInsensitiveContains(query)
@@ -185,10 +223,14 @@ final class DockerStore: ObservableObject {
             async let imagesTask = client.images()
             async let statsTask = client.stats()
             async let diskTask = client.diskUsage()
+            async let volumesTask = client.volumes()
+            async let networksTask = client.networks()
 
             daemon = try await daemonTask
             containers = try await containersTask
             images = try await imagesTask
+            volumes = (try? await volumesTask) ?? []
+            networks = (try? await networksTask) ?? []
             statsByContainerID = indexStats((try? await statsTask) ?? [])
             diskUsage = (try? await diskTask) ?? []
             lastUpdated = Date()
@@ -199,6 +241,8 @@ final class DockerStore: ObservableObject {
             daemon = nil
             containers = []
             images = []
+            volumes = []
+            networks = []
             statsByContainerID = [:]
             diskUsage = []
             selectedContainerID = nil
@@ -227,6 +271,16 @@ final class DockerStore: ObservableObject {
         logErrorMessage = nil
     }
 
+    func toggleLogPause() {
+        isLogPaused.toggle()
+    }
+
+    func reloadSelectedLogs() {
+        Task {
+            await loadLogsForSelection(force: true)
+        }
+    }
+
     func start(_ container: DockerContainer) {
         runAction("start-\(container.id)") { client in
             try await client.start(container: container)
@@ -245,6 +299,78 @@ final class DockerStore: ObservableObject {
         }
     }
 
+    func startGroup(_ group: ContainerProjectGroup) {
+        runAction("start-group-\(group.id)") { client in
+            for container in group.containers where !container.isRunning {
+                try await client.start(container: container)
+            }
+        }
+    }
+
+    func stopGroup(_ group: ContainerProjectGroup) {
+        runAction("stop-group-\(group.id)") { client in
+            for container in group.containers where container.isRunning {
+                try await client.stop(container: container)
+            }
+        }
+    }
+
+    func restartGroup(_ group: ContainerProjectGroup) {
+        runAction("restart-group-\(group.id)") { client in
+            for container in group.containers where container.isRunning {
+                try await client.restart(container: container)
+            }
+        }
+    }
+
+    func confirmDelete(container: DockerContainer, force: Bool = false) {
+        pendingConfirmation = DockerConfirmation(target: .container(container, force: force))
+    }
+
+    func confirmDelete(image: DockerImage, force: Bool = false) {
+        pendingConfirmation = DockerConfirmation(target: .image(image, force: force))
+    }
+
+    func confirmDelete(volume: DockerVolume) {
+        pendingConfirmation = DockerConfirmation(target: .volume(volume))
+    }
+
+    func confirmDelete(network: DockerNetwork) {
+        pendingConfirmation = DockerConfirmation(target: .network(network))
+    }
+
+    func confirmPruneSystem() {
+        pendingConfirmation = DockerConfirmation(target: .pruneSystem)
+    }
+
+    func performPendingConfirmation() {
+        guard let pendingConfirmation else { return }
+        self.pendingConfirmation = nil
+
+        switch pendingConfirmation.target {
+        case let .container(container, force):
+            runAction("remove-\(container.id)") { client in
+                try await client.remove(container: container, force: force)
+            }
+        case let .image(image, force):
+            runAction("remove-image-\(image.id)") { client in
+                try await client.remove(image: image, force: force)
+            }
+        case let .volume(volume):
+            runAction("remove-volume-\(volume.name)") { client in
+                try await client.remove(volume: volume)
+            }
+        case let .network(network):
+            runAction("remove-network-\(network.name)") { client in
+                try await client.remove(network: network)
+            }
+        case .pruneSystem:
+            runAction("system-prune") { client in
+                try await client.pruneSystem()
+            }
+        }
+    }
+
     private var normalizedSearch: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -257,7 +383,11 @@ final class DockerStore: ObservableObject {
         selectedContainerID = containers.first(where: \.isRunning)?.id ?? containers.first?.id
     }
 
-    private func loadLogsForSelection() async {
+    private func loadLogsForSelection(force: Bool = false) async {
+        guard force || !isLogPaused else {
+            return
+        }
+
         guard let client, let selectedContainer else {
             logOutput = ""
             return

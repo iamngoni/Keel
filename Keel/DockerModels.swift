@@ -91,6 +91,10 @@ struct DockerImage: Identifiable, Decodable, Equatable {
         }
         return "\(repository):\(tag)"
     }
+
+    var shortID: String {
+        id.replacingOccurrences(of: "sha256:", with: "").prefixString(12)
+    }
 }
 
 struct DockerDaemon: Equatable {
@@ -181,6 +185,89 @@ struct DockerDiskUsage: Identifiable, Decodable, Equatable {
     }
 }
 
+struct DockerVolume: Identifiable, Decodable, Equatable {
+    let name: String
+    let driver: String
+    let scope: String
+    let mountpoint: String
+    let size: String
+    let labels: String
+
+    var id: String { name }
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name"
+        case driver = "Driver"
+        case scope = "Scope"
+        case mountpoint = "Mountpoint"
+        case size = "Size"
+        case labels = "Labels"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        driver = try container.decodeIfPresent(String.self, forKey: .driver) ?? "-"
+        scope = try container.decodeIfPresent(String.self, forKey: .scope) ?? "-"
+        mountpoint = try container.decodeIfPresent(String.self, forKey: .mountpoint) ?? "-"
+        size = try container.decodeIfPresent(String.self, forKey: .size) ?? "-"
+        labels = try container.decodeIfPresent(String.self, forKey: .labels) ?? ""
+    }
+
+    var displayName: String {
+        if name.count > 24, labels.contains("anonymous") {
+            return "Anonymous volume"
+        }
+        return name
+    }
+
+    var shortName: String {
+        name.prefixString(18)
+    }
+}
+
+struct DockerNetwork: Identifiable, Decodable, Equatable {
+    let id: String
+    let name: String
+    let driver: String
+    let scope: String
+    let ipv4: String
+    let ipv6: String
+    let internalNetwork: String
+    let labels: String
+
+    enum CodingKeys: String, CodingKey {
+        case id = "ID"
+        case name = "Name"
+        case driver = "Driver"
+        case scope = "Scope"
+        case ipv4 = "IPv4"
+        case ipv6 = "IPv6"
+        case internalNetwork = "Internal"
+        case labels = "Labels"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        driver = try container.decodeIfPresent(String.self, forKey: .driver) ?? "-"
+        scope = try container.decodeIfPresent(String.self, forKey: .scope) ?? "-"
+        ipv4 = try container.decodeIfPresent(String.self, forKey: .ipv4) ?? "-"
+        ipv6 = try container.decodeIfPresent(String.self, forKey: .ipv6) ?? "-"
+        internalNetwork = try container.decodeIfPresent(String.self, forKey: .internalNetwork) ?? "-"
+        labels = try container.decodeIfPresent(String.self, forKey: .labels) ?? ""
+    }
+
+    var shortID: String {
+        id.prefixString(12)
+    }
+
+    var isBuiltin: Bool {
+        ["bridge", "host", "none"].contains(name)
+    }
+}
+
 struct ContainerProjectGroup: Identifiable, Equatable {
     let name: String
     let containers: [DockerContainer]
@@ -202,6 +289,64 @@ struct KeelEvent: Identifiable {
     let title: String
     let subtitle: String?
     let color: Color
+}
+
+struct DockerConfirmation: Identifiable {
+    enum Target {
+        case container(DockerContainer, force: Bool)
+        case image(DockerImage, force: Bool)
+        case volume(DockerVolume)
+        case network(DockerNetwork)
+        case pruneSystem
+    }
+
+    let id = UUID()
+    let target: Target
+
+    var title: String {
+        switch target {
+        case let .container(container, force):
+            return force ? "Force delete \(container.serviceName)?" : "Delete \(container.serviceName)?"
+        case let .image(image, force):
+            return force ? "Force delete \(image.displayName)?" : "Delete \(image.displayName)?"
+        case let .volume(volume):
+            return "Delete volume \(volume.shortName)?"
+        case let .network(network):
+            return "Delete network \(network.name)?"
+        case .pruneSystem:
+            return "Prune unused Docker data?"
+        }
+    }
+
+    var message: String {
+        switch target {
+        case let .container(container, force):
+            if force {
+                return "This will stop and remove \(container.name). This cannot be undone."
+            }
+            return "This will remove \(container.name). Docker will refuse if it is running."
+        case let .image(image, force):
+            if force {
+                return "This will force remove \(image.displayName), even if Docker reports dependent tags. Containers using it may break."
+            }
+            return "This will remove \(image.displayName). Docker will refuse if a container still depends on it."
+        case let .volume(volume):
+            return "This will remove \(volume.name) and its stored data. This cannot be undone."
+        case let .network(network):
+            return "This will remove \(network.name). Docker will refuse if containers are attached or if it is a default network."
+        case .pruneSystem:
+            return "This removes unused containers, networks, dangling images, and build cache according to Docker's prune rules."
+        }
+    }
+
+    var confirmTitle: String {
+        switch target {
+        case .pruneSystem:
+            return "Prune"
+        default:
+            return "Delete"
+        }
+    }
 }
 
 enum DockerNameFormatter {
@@ -260,5 +405,11 @@ enum DockerSizeParser {
         default:
             return number
         }
+    }
+}
+
+extension String {
+    func prefixString(_ count: Int) -> String {
+        String(prefix(count))
     }
 }

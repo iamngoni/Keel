@@ -55,6 +55,16 @@ final class DockerClient {
         return try decodeLineDelimitedJSON(output, as: DockerDiskUsage.self)
     }
 
+    func volumes() async throws -> [DockerVolume] {
+        let output = try await run(["volume", "ls", "--format", "{{json .}}"])
+        return try decodeLineDelimitedJSON(output, as: DockerVolume.self)
+    }
+
+    func networks() async throws -> [DockerNetwork] {
+        let output = try await run(["network", "ls", "--format", "{{json .}}"])
+        return try decodeLineDelimitedJSON(output, as: DockerNetwork.self)
+    }
+
     func logs(container: DockerContainer, tail: Int = 120) async throws -> String {
         try await run(
             ["logs", "--tail", "\(tail)", "--timestamps", container.id],
@@ -72,6 +82,36 @@ final class DockerClient {
 
     func restart(container: DockerContainer) async throws {
         _ = try await run(["restart", container.id])
+    }
+
+    func remove(container: DockerContainer, force: Bool) async throws {
+        var arguments = ["rm"]
+        if force {
+            arguments.append("-f")
+        }
+        arguments.append(container.id)
+        _ = try await run(arguments)
+    }
+
+    func remove(image: DockerImage, force: Bool) async throws {
+        var arguments = ["rmi"]
+        if force {
+            arguments.append("-f")
+        }
+        arguments.append(image.id)
+        _ = try await run(arguments)
+    }
+
+    func remove(volume: DockerVolume) async throws {
+        _ = try await run(["volume", "rm", volume.name])
+    }
+
+    func remove(network: DockerNetwork) async throws {
+        _ = try await run(["network", "rm", network.name])
+    }
+
+    func pruneSystem() async throws {
+        _ = try await run(["system", "prune", "-f"])
     }
 
     private func decodeLineDelimitedJSON<T: Decodable>(_ output: String, as type: T.Type) throws -> [T] {

@@ -96,7 +96,9 @@ struct KeelCommandBar: View {
                 Task { await store.refresh() }
             }
 
-            KeelIconButton(systemName: "terminal", help: "Docker CLI") {}
+            KeelIconButton(systemName: "terminal", help: "Open Terminal") {
+                KeelSystemActions.openTerminal()
+            }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
@@ -115,9 +117,6 @@ struct ContextChip: View {
             Text(daemon?.context ?? "offline")
                 .font(.callout.weight(.medium))
                 .lineLimit(1)
-            Image(systemName: "chevron.down")
-                .font(.caption)
-                .foregroundStyle(KeelTheme.textSubtle)
         }
         .padding(.horizontal, 12)
         .frame(height: 34)
@@ -210,6 +209,29 @@ struct ContainerGroupSection: View {
                     .padding(.vertical, 3)
                     .background(Capsule().fill(Color.white.opacity(0.10)))
                 Spacer()
+
+                Menu {
+                    Button("Start stopped containers") {
+                        store.startGroup(group)
+                    }
+                    Button("Stop running containers") {
+                        store.stopGroup(group)
+                    }
+                    Button("Restart running containers") {
+                        store.restartGroup(group)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(KeelTheme.textMuted)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.white.opacity(0.05))
+                        )
+                }
+                .menuStyle(.borderlessButton)
+                .help("Project actions")
             }
             .padding(.horizontal, 14)
             .frame(height: 38)
@@ -223,7 +245,9 @@ struct ContainerGroupSection: View {
                     isBusy: store.actionInFlight?.contains(container.id) == true,
                     select: { store.select(container) },
                     startStop: { container.isRunning ? store.stop(container) : store.start(container) },
-                    restart: { store.restart(container) }
+                    restart: { store.restart(container) },
+                    delete: { store.confirmDelete(container: container) },
+                    forceDelete: { store.confirmDelete(container: container, force: true) }
                 )
 
                 if container.id != group.containers.last?.id {
@@ -250,83 +274,116 @@ struct ContainerLaneRow: View {
     let select: () -> Void
     let startStop: () -> Void
     let restart: () -> Void
+    let delete: () -> Void
+    let forceDelete: () -> Void
 
     var body: some View {
-        Button(action: select) {
-            HStack(spacing: 14) {
-                HStack(spacing: 10) {
-                    Circle()
-                        .fill(container.statusColor)
-                        .frame(width: 9, height: 9)
-                        .shadow(color: container.statusColor.opacity(0.4), radius: 4)
+        HStack(spacing: 14) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(container.statusColor)
+                    .frame(width: 9, height: 9)
+                    .shadow(color: container.statusColor.opacity(0.4), radius: 4)
 
-                    Image(systemName: "cube.transparent")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(KeelTheme.accent)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(container.serviceName)
-                            .font(.callout.weight(.semibold))
-                            .lineLimit(1)
-                        Text(container.shortID)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(KeelTheme.textSubtle)
-                            .lineLimit(1)
-                    }
-                }
-                .frame(minWidth: 150, maxWidth: 190, alignment: .leading)
-
-                Text(container.image)
-                    .font(.callout)
-                    .foregroundStyle(.white.opacity(0.82))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                StatusBadge(text: container.badgeText, color: container.statusColor)
-                    .frame(width: 86, alignment: .leading)
+                Image(systemName: "cube.transparent")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(KeelTheme.accent)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(container.displayPorts)
-                        .font(.callout.monospacedDigit())
+                    Text(container.serviceName)
+                        .font(.callout.weight(.semibold))
                         .lineLimit(1)
-                    Text(container.portProtocolLabel)
-                        .font(.caption)
+                    Text(container.shortID)
+                        .font(.caption.monospaced())
                         .foregroundStyle(KeelTheme.textSubtle)
                         .lineLimit(1)
                 }
-                .frame(width: 112, alignment: .leading)
-
-                MetricCell(label: "CPU", value: stats?.cpuPercentage ?? "-", seed: container.id)
-                    .frame(width: 92, alignment: .leading)
-
-                MetricCell(label: "MEM", value: stats?.memorySummary ?? "-", seed: container.name, color: KeelTheme.accent.opacity(0.78))
-                    .frame(width: 116, alignment: .leading)
-
-                HStack(spacing: 8) {
-                    KeelIconButton(
-                        systemName: container.isRunning ? "stop.fill" : "play.fill",
-                        help: container.isRunning ? "Stop" : "Start",
-                        isDisabled: isBusy,
-                        action: startStop
-                    )
-
-                    KeelIconButton(
-                        systemName: "arrow.clockwise",
-                        help: "Restart",
-                        isDisabled: isBusy || !container.isRunning,
-                        action: restart
-                    )
-
-                    KeelIconButton(systemName: "ellipsis", help: "More actions") {}
-                }
-                .frame(width: 112, alignment: .trailing)
             }
-            .padding(.horizontal, 14)
-            .frame(height: 62)
-            .background(isSelected ? KeelTheme.selectedBackground : Color.clear)
+            .frame(minWidth: 150, maxWidth: 190, alignment: .leading)
+
+            Text(container.image)
+                .font(.callout)
+                .foregroundStyle(.white.opacity(0.82))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            StatusBadge(text: container.badgeText, color: container.statusColor)
+                .frame(width: 86, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(container.displayPorts)
+                    .font(.callout.monospacedDigit())
+                    .lineLimit(1)
+                Text(container.portProtocolLabel)
+                    .font(.caption)
+                    .foregroundStyle(KeelTheme.textSubtle)
+                    .lineLimit(1)
+            }
+            .frame(width: 112, alignment: .leading)
+
+            MetricCell(label: "CPU", value: stats?.cpuPercentage ?? "-", seed: container.id)
+                .frame(width: 92, alignment: .leading)
+
+            MetricCell(label: "MEM", value: stats?.memorySummary ?? "-", seed: container.name, color: KeelTheme.accent.opacity(0.78))
+                .frame(width: 116, alignment: .leading)
+
+            HStack(spacing: 8) {
+                KeelIconButton(
+                    systemName: container.isRunning ? "stop.fill" : "play.fill",
+                    help: container.isRunning ? "Stop" : "Start",
+                    isDisabled: isBusy,
+                    action: startStop
+                )
+
+                KeelIconButton(
+                    systemName: "arrow.clockwise",
+                    help: "Restart",
+                    isDisabled: isBusy || !container.isRunning,
+                    action: restart
+                )
+
+                Menu {
+                    Button(container.isRunning ? "Stop" : "Start", action: startStop)
+                    Button("Restart", action: restart)
+                        .disabled(!container.isRunning)
+                    Divider()
+                    Button("Delete", role: .destructive, action: delete)
+                        .disabled(container.isRunning)
+                    Button("Force Delete", role: .destructive, action: forceDelete)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(KeelTheme.textMuted)
+                        .frame(width: 30, height: 30)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.white.opacity(0.06))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .stroke(KeelTheme.subtleBorder, lineWidth: 1)
+                        )
+                }
+                .menuStyle(.borderlessButton)
+                .help("More actions")
+            }
+            .frame(width: 112, alignment: .trailing)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .frame(height: 62)
+        .background(isSelected ? KeelTheme.selectedBackground : Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: select)
+        .contextMenu {
+            Button(container.isRunning ? "Stop" : "Start", action: startStop)
+            Button("Restart", action: restart)
+                .disabled(!container.isRunning)
+            Divider()
+            Button("Delete", role: .destructive, action: delete)
+                .disabled(container.isRunning)
+            Button("Force Delete", role: .destructive, action: forceDelete)
+        }
     }
 }
 
@@ -352,8 +409,27 @@ struct MetricCell: View {
     }
 }
 
+struct LogResizeHandle: View {
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(KeelTheme.border)
+                .frame(height: 1)
+
+            Capsule()
+                .fill(Color.white.opacity(0.28))
+                .frame(width: 34, height: 4)
+        }
+        .frame(height: 12)
+        .background(KeelTheme.panelBackground.opacity(0.84))
+        .contentShape(Rectangle())
+        .help("Drag to resize logs")
+    }
+}
+
 struct LogDrawer: View {
     @ObservedObject var store: DockerStore
+    let openFullLogs: () -> Void
     @State private var selectedLevel = "All"
     @State private var filterText = ""
     private let levels = ["All", "Info", "Warn", "Error"]
@@ -408,13 +484,20 @@ struct LogDrawer: View {
                             )
                     )
 
-                    StatusBadge(text: store.isLoadingLogs ? "Loading" : "Live", color: store.isLoadingLogs ? KeelTheme.warning : KeelTheme.healthy)
+                    StatusBadge(
+                        text: store.isLogPaused ? "Paused" : (store.isLoadingLogs ? "Loading" : "Live"),
+                        color: store.isLogPaused ? KeelTheme.textMuted : (store.isLoadingLogs ? KeelTheme.warning : KeelTheme.healthy)
+                    )
 
-                    KeelIconButton(systemName: "pause.fill", help: "Pause log stream") {}
+                    KeelIconButton(systemName: store.isLogPaused ? "play.fill" : "pause.fill", help: store.isLogPaused ? "Resume logs" : "Pause logs") {
+                        store.toggleLogPause()
+                    }
                     KeelIconButton(systemName: "trash", help: "Clear visible logs") {
                         store.clearLogs()
                     }
-                    KeelIconButton(systemName: "arrow.up.left.and.arrow.down.right", help: "Open logs") {}
+                    KeelIconButton(systemName: "arrow.up.left.and.arrow.down.right", help: "Open full logs") {
+                        openFullLogs()
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
@@ -474,52 +557,41 @@ struct EngineStatusRail: View {
     @ObservedObject var store: DockerStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            engineHeader
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                engineHeader
 
-            Divider()
-                .overlay(KeelTheme.border)
-                .padding(.vertical, 18)
+                Divider()
+                    .overlay(KeelTheme.border)
+                    .padding(.vertical, 18)
 
-            resources
+                resources
 
-            Divider()
-                .overlay(KeelTheme.border)
-                .padding(.vertical, 18)
+                Divider()
+                    .overlay(KeelTheme.border)
+                    .padding(.vertical, 18)
 
-            network
+                network
 
-            Divider()
-                .overlay(KeelTheme.border)
-                .padding(.vertical, 18)
+                Divider()
+                    .overlay(KeelTheme.border)
+                    .padding(.vertical, 18)
 
-            recentEvents
+                recentEvents
 
-            Spacer()
+                VStack(spacing: 8) {
+                    RailActionButton(title: "Refresh stats", symbol: "chart.xyaxis.line") {
+                        Task { await store.refresh() }
+                    }
 
-            Button {
-                Task { await store.refresh() }
-            } label: {
-                HStack {
-                    Text("Show system stats")
-                    Spacer()
-                    Image(systemName: "chart.xyaxis.line")
+                    RailActionButton(title: "Prune unused", symbol: "trash") {
+                        store.confirmPruneSystem()
+                    }
                 }
-                .font(.callout.weight(.medium))
-                .padding(.horizontal, 12)
-                .frame(height: 42)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(KeelTheme.border, lineWidth: 1)
-                        )
-                )
+                .padding(.top, 18)
             }
-            .buttonStyle(.plain)
+            .padding(18)
         }
-        .padding(18)
         .background(Color.black.opacity(0.09))
     }
 
@@ -607,7 +679,10 @@ struct EngineStatusRail: View {
                 Text("Recent events")
                     .font(.headline)
                 Spacer()
-                Text("View all")
+                Button("View logs") {
+                    store.selectedSection = .logs
+                }
+                .buttonStyle(.plain)
                     .font(.caption)
                     .foregroundStyle(KeelTheme.textMuted)
             }
@@ -648,6 +723,34 @@ struct EngineStatusRail: View {
         default:
             return KeelTheme.warning
         }
+    }
+}
+
+struct RailActionButton: View {
+    let title: String
+    let symbol: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                Text(title)
+                Spacer()
+                Image(systemName: symbol)
+            }
+            .font(.callout.weight(.medium))
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(KeelTheme.border, lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -728,6 +831,15 @@ struct ImagesWorkspace: View {
                             Text(image.size)
                                 .font(.caption.monospacedDigit())
                                 .frame(width: 84, alignment: .trailing)
+
+                            ResourceMenu {
+                                Button("Delete Image", role: .destructive) {
+                                    store.confirmDelete(image: image)
+                                }
+                                Button("Force Delete Image", role: .destructive) {
+                                    store.confirmDelete(image: image, force: true)
+                                }
+                            }
                         }
                         .padding(14)
                         .background(
@@ -738,6 +850,14 @@ struct ImagesWorkspace: View {
                                         .stroke(KeelTheme.border, lineWidth: 1)
                                 )
                         )
+                        .contextMenu {
+                            Button("Delete Image", role: .destructive) {
+                                store.confirmDelete(image: image)
+                            }
+                            Button("Force Delete Image", role: .destructive) {
+                                store.confirmDelete(image: image, force: true)
+                            }
+                        }
                     }
                 }
             }
@@ -746,16 +866,327 @@ struct ImagesWorkspace: View {
     }
 }
 
-struct ComingSoonWorkspace: View {
-    let section: KeelSection
+struct ComposeWorkspace: View {
+    @ObservedObject var store: DockerStore
 
     var body: some View {
-        EmptyWorkspaceState(
-            title: section.rawValue,
-            subtitle: "This workspace is staged in the navigation and ready for the next Docker surface.",
-            symbol: section.symbol
+        ScrollView {
+            LazyVStack(spacing: 12) {
+                if store.containerGroups.isEmpty {
+                    EmptyWorkspaceState(title: "No compose projects", subtitle: "No grouped Docker containers were found.", symbol: "chevron.left.forwardslash.chevron.right")
+                        .padding(.top, 80)
+                } else {
+                    ForEach(store.containerGroups) { group in
+                        KeelPanel {
+                            HStack(spacing: 14) {
+                                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                                    .foregroundStyle(KeelTheme.accent)
+                                    .frame(width: 30)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(group.name)
+                                        .font(.headline)
+                                    Text(group.statusSummary)
+                                        .font(.caption)
+                                        .foregroundStyle(KeelTheme.textMuted)
+                                }
+
+                                Spacer()
+
+                                Text("\(group.containers.count) containers")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(KeelTheme.textMuted)
+
+                                KeelIconButton(systemName: "play.fill", help: "Start stopped containers") {
+                                    store.startGroup(group)
+                                }
+                                KeelIconButton(systemName: "stop.fill", help: "Stop running containers") {
+                                    store.stopGroup(group)
+                                }
+                                KeelIconButton(systemName: "arrow.clockwise", help: "Restart running containers") {
+                                    store.restartGroup(group)
+                                }
+                            }
+                            .padding(14)
+                        }
+                    }
+                }
+            }
+            .padding(16)
+        }
+    }
+}
+
+struct VolumesWorkspace: View {
+    @ObservedObject var store: DockerStore
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 8) {
+                if store.filteredVolumes.isEmpty {
+                    EmptyWorkspaceState(title: "No volumes", subtitle: "No Docker volumes match the current search.", symbol: "externaldrive")
+                        .padding(.top, 80)
+                } else {
+                    ForEach(store.filteredVolumes) { volume in
+                        ResourceRow(
+                            symbol: "externaldrive",
+                            title: volume.displayName,
+                            subtitle: volume.name,
+                            metadata: [
+                                ("Driver", volume.driver),
+                                ("Scope", volume.scope),
+                                ("Size", volume.size)
+                            ]
+                        ) {
+                            Button("Delete Volume", role: .destructive) {
+                                store.confirmDelete(volume: volume)
+                            }
+                        }
+                        .contextMenu {
+                            Button("Delete Volume", role: .destructive) {
+                                store.confirmDelete(volume: volume)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(16)
+        }
+    }
+}
+
+struct NetworksWorkspace: View {
+    @ObservedObject var store: DockerStore
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 8) {
+                if store.filteredNetworks.isEmpty {
+                    EmptyWorkspaceState(title: "No networks", subtitle: "No Docker networks match the current search.", symbol: "point.3.connected.trianglepath.dotted")
+                        .padding(.top, 80)
+                } else {
+                    ForEach(store.filteredNetworks) { network in
+                        ResourceRow(
+                            symbol: "point.3.connected.trianglepath.dotted",
+                            title: network.name,
+                            subtitle: network.shortID,
+                            metadata: [
+                                ("Driver", network.driver),
+                                ("Scope", network.scope),
+                                ("IPv4", network.ipv4),
+                                ("Internal", network.internalNetwork)
+                            ]
+                        ) {
+                            Button("Delete Network", role: .destructive) {
+                                store.confirmDelete(network: network)
+                            }
+                            .disabled(network.isBuiltin)
+                        }
+                        .contextMenu {
+                            Button("Delete Network", role: .destructive) {
+                                store.confirmDelete(network: network)
+                            }
+                            .disabled(network.isBuiltin)
+                        }
+                    }
+                }
+            }
+            .padding(16)
+        }
+    }
+}
+
+struct LogsWorkspace: View {
+    @ObservedObject var store: DockerStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Text(store.selectedContainer?.name ?? "Logs")
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer()
+                KeelIconButton(systemName: store.isLogPaused ? "play.fill" : "pause.fill", help: store.isLogPaused ? "Resume logs" : "Pause logs") {
+                    store.toggleLogPause()
+                }
+                KeelIconButton(systemName: "arrow.clockwise", help: "Reload logs") {
+                    store.reloadSelectedLogs()
+                }
+                KeelIconButton(systemName: "trash", help: "Clear logs") {
+                    store.clearLogs()
+                }
+            }
+            .padding(16)
+
+            Divider()
+                .overlay(KeelTheme.border)
+
+            ScrollView {
+                Text(store.logErrorMessage ?? (store.logOutput.isEmpty ? "Select a container to view logs." : store.logOutput))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.84))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding(16)
+            }
+        }
+    }
+}
+
+struct SettingsWorkspace: View {
+    @ObservedObject var store: DockerStore
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                SettingsRow(title: "Docker context", value: store.daemon?.context ?? "Unavailable", symbol: "server.rack")
+                SettingsRow(title: "Engine version", value: store.daemon?.version ?? "Unavailable", symbol: "cpu")
+                SettingsRow(title: "Containers", value: "\(store.containers.count)", symbol: "cube")
+                SettingsRow(title: "Images", value: "\(store.images.count)", symbol: "square.stack.3d.up")
+                SettingsRow(title: "Volumes", value: "\(store.volumes.count)", symbol: "externaldrive")
+                SettingsRow(title: "Networks", value: "\(store.networks.count)", symbol: "point.3.connected.trianglepath.dotted")
+
+                HStack(spacing: 10) {
+                    Button("Refresh Docker Data") {
+                        Task { await store.refresh() }
+                    }
+
+                    Button("Open Terminal") {
+                        KeelSystemActions.openTerminal()
+                    }
+
+                    Button("Prune Unused Docker Data", role: .destructive) {
+                        store.confirmPruneSystem()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .padding(.top, 4)
+            }
+            .padding(18)
+        }
+    }
+}
+
+struct ResourceRow<MenuContent: View>: View {
+    let symbol: String
+    let title: String
+    let subtitle: String
+    let metadata: [(String, String)]
+    let menuContent: MenuContent
+
+    init(
+        symbol: String,
+        title: String,
+        subtitle: String,
+        metadata: [(String, String)],
+        @ViewBuilder menuContent: () -> MenuContent
+    ) {
+        self.symbol = symbol
+        self.title = title
+        self.subtitle = subtitle
+        self.metadata = metadata
+        self.menuContent = menuContent()
+    }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: symbol)
+                .foregroundStyle(KeelTheme.accent)
+                .frame(width: 26)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(subtitle)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(KeelTheme.textSubtle)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer()
+
+            ForEach(metadata, id: \.0) { item in
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(item.1)
+                        .font(.caption.monospacedDigit())
+                        .lineLimit(1)
+                    Text(item.0)
+                        .font(.caption2)
+                        .foregroundStyle(KeelTheme.textSubtle)
+                        .lineLimit(1)
+                }
+                .frame(width: 96, alignment: .trailing)
+            }
+
+            ResourceMenu {
+                menuContent
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(KeelTheme.panelBackground.opacity(0.76))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(KeelTheme.border, lineWidth: 1)
+                )
         )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct ResourceMenu<MenuContent: View>: View {
+    let content: MenuContent
+
+    init(@ViewBuilder content: () -> MenuContent) {
+        self.content = content()
+    }
+
+    var body: some View {
+        Menu {
+            content
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(KeelTheme.textMuted)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(KeelTheme.subtleBorder, lineWidth: 1)
+                )
+        }
+        .menuStyle(.borderlessButton)
+    }
+}
+
+struct SettingsRow: View {
+    let title: String
+    let value: String
+    let symbol: String
+
+    var body: some View {
+        KeelPanel {
+            HStack(spacing: 14) {
+                Image(systemName: symbol)
+                    .foregroundStyle(KeelTheme.accent)
+                    .frame(width: 28)
+                Text(title)
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                Text(value)
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(KeelTheme.textMuted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(14)
+        }
     }
 }
 
@@ -775,7 +1206,20 @@ struct DockerUnavailableView: View {
                 .foregroundStyle(KeelTheme.textMuted)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 520)
-            Button("Refresh", action: refresh)
+
+            HStack(spacing: 10) {
+                Button("Refresh", action: refresh)
+                Button("Get OrbStack") {
+                    KeelSystemActions.openURL("https://orbstack.dev")
+                }
+                Button("Get Docker Desktop") {
+                    KeelSystemActions.openURL("https://www.docker.com/products/docker-desktop/")
+                }
+                Button("Colima setup") {
+                    KeelSystemActions.openURL("https://github.com/abiosoft/colima")
+                }
+            }
+            .buttonStyle(.bordered)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

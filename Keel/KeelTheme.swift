@@ -101,14 +101,32 @@ struct MetricSparkline: View {
     let seed: String
     var color = KeelTheme.accent
 
-    private var values: [Double] {
-        var state = UInt64(bitPattern: Int64(seed.hashValue)) &+ 0x9E3779B97F4A7C15
-        return (0..<18).map { index in
-            state = state &* 6364136223846793005 &+ 1442695040888963407
+    private static let hashOffset: UInt64 = 0xcbf29ce484222325
+    private static let hashPrime: UInt64 = 0x100000001b3
+    private static let goldenRatio: UInt64 = 0x9E3779B97F4A7C15
+    private static let generatorMultiplier: UInt64 = 6364136223846793005
+    private static let generatorIncrement: UInt64 = 1442695040888963407
+
+    static func generatedValues(for seed: String, count: Int = 18) -> [Double] {
+        guard count > 0 else { return [] }
+
+        var hash = hashOffset
+        for byte in seed.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* hashPrime
+        }
+
+        var state = hash &+ goldenRatio
+        return (0..<count).map { index in
+            state = state &* generatorMultiplier &+ generatorIncrement
             let noise = Double((state >> 32) % 100) / 100
             let wave = (sin(Double(index) * 0.65) + 1) / 2
             return min(1, max(0.08, noise * 0.55 + wave * 0.45))
         }
+    }
+
+    private var values: [Double] {
+        Self.generatedValues(for: seed)
     }
 
     var body: some View {

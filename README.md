@@ -54,11 +54,19 @@ Keel should work with any local runtime that exposes the standard Docker CLI and
 - Starts stopped containers
 - Stops running containers
 - Restarts running containers
+- Deletes stopped containers and force-removes containers with confirmation
+- Starts, stops, and restarts grouped project containers
 - Shows recent container logs for the selected container
+- Lets the log drawer be resized by dragging the divider
 - Shows Docker disk usage by images, containers, volumes, and build cache
 - Shows selected-container network I/O
 - Lists local Docker images
 - Shows image repository, tag, id, age, and size
+- Removes images with confirmation
+- Lists Docker volumes and removes volumes with confirmation
+- Lists Docker networks and removes removable networks with confirmation
+- Shows grouped compose-style projects inferred from local containers
+- Provides no-engine onboarding links for OrbStack, Docker Desktop, and Colima
 
 ## Roadmap
 
